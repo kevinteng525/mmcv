@@ -120,13 +120,21 @@ def indice_conv(features,
                 num_activate_out,
                 inverse=False,
                 subm=False):
-    if filters.dtype == torch.float32 or filters.dtype == torch.half:
-        return ext_module.indice_conv_forward(features, filters, indice_pairs,
-                                              indice_pair_num,
-                                              num_activate_out, int(inverse),
-                                              int(subm))
+    # Check if we're in TorchScript mode (tracing or scripting)
+    if torch.jit.is_tracing() or torch.jit.is_scripting():
+        # Use TorchScript-compatible implementation
+        from .sparse_ts_impl import indice_conv_forward as ts_impl
+        return ts_impl(features, filters, indice_pairs, indice_pair_num,
+                      num_activate_out, inverse, subm)
     else:
-        raise NotImplementedError
+        # Use original fast implementation
+        if filters.dtype == torch.float32 or filters.dtype == torch.half:
+            return ext_module.indice_conv_forward(features, filters, indice_pairs,
+                                                  indice_pair_num,
+                                                  num_activate_out, int(inverse),
+                                                  int(subm))
+        else:
+            raise NotImplementedError
 
 
 def fused_indice_conv(features, filters, bias, indice_pairs, indice_pair_num,
@@ -147,28 +155,51 @@ def indice_conv_backward(features,
                          indice_pair_num,
                          inverse=False,
                          subm=False):
-    if filters.dtype == torch.float32 or filters.dtype == torch.half:
-        return ext_module.indice_conv_backward(features, filters, out_bp,
-                                               indice_pairs, indice_pair_num,
-                                               int(inverse), int(subm))
+    # Check if we're in TorchScript mode (tracing or scripting)
+    if torch.jit.is_tracing() or torch.jit.is_scripting():
+        # Use TorchScript-compatible implementation
+        from .sparse_ts_impl import indice_conv_backward as ts_impl
+        return ts_impl(features, filters, out_bp, indice_pairs,
+                      indice_pair_num, inverse, subm)
     else:
-        raise NotImplementedError
+        # Use original fast implementation
+        if filters.dtype == torch.float32 or filters.dtype == torch.half:
+            return ext_module.indice_conv_backward(features, filters, out_bp,
+                                                   indice_pairs, indice_pair_num,
+                                                   int(inverse), int(subm))
+        else:
+            raise NotImplementedError
 
 
 def indice_maxpool(features, indice_pairs, indice_pair_num, num_activate_out):
-    if features.dtype == torch.float32 or features.dtype == torch.half:
-        return ext_module.indice_maxpool_forward(features, indice_pairs,
-                                                 indice_pair_num,
-                                                 num_activate_out)
+    # Check if we're in TorchScript mode (tracing or scripting)
+    if torch.jit.is_tracing() or torch.jit.is_scripting():
+        # Use TorchScript-compatible implementation
+        from .sparse_ts_impl import indice_maxpool_forward as ts_impl
+        return ts_impl(features, indice_pairs, indice_pair_num, num_activate_out)
     else:
-        raise NotImplementedError
+        # Use original fast implementation
+        if features.dtype == torch.float32 or features.dtype == torch.half:
+            return ext_module.indice_maxpool_forward(features, indice_pairs,
+                                                     indice_pair_num,
+                                                     num_activate_out)
+        else:
+            raise NotImplementedError
 
 
 def indice_maxpool_backward(features, out_features, out_bp, indice_pairs,
                             indice_pair_num):
-    if features.dtype == torch.float32 or features.dtype == torch.half:
-        return ext_module.indice_maxpool_backward(features, out_features,
-                                                  out_bp, indice_pairs,
-                                                  indice_pair_num)
+    # Check if we're in TorchScript mode (tracing or scripting)
+    if torch.jit.is_tracing() or torch.jit.is_scripting():
+        # Use TorchScript-compatible implementation
+        from .sparse_ts_impl import indice_maxpool_backward as ts_impl
+        return ts_impl(features, out_features, out_bp, indice_pairs,
+                      indice_pair_num)
     else:
-        raise NotImplementedError
+        # Use original fast implementation
+        if features.dtype == torch.float32 or features.dtype == torch.half:
+            return ext_module.indice_maxpool_backward(features, out_features,
+                                                      out_bp, indice_pairs,
+                                                      indice_pair_num)
+        else:
+            raise NotImplementedError
