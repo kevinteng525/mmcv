@@ -65,21 +65,18 @@ def _indice_conv_forward_impl(features: torch.Tensor,
     # Reshape filters
     filters_reshaped = filters.view(-1, in_channels, out_channels)
 
-    # 修正：累积索引而不是成对读取
     pair_offset = 0
 
     for k in range(num_kernels):
-        # 方案A：如果 indice_pair_num 存储的是每个kernel的pair数量
-        num_pairs = int(indice_pair_num[k].item())
+        num_pairs = int(indice_pair_num[k].long().item())
 
         if num_pairs == 0:
             continue
 
         pair_start = pair_offset
         pair_end = pair_offset + num_pairs
-        pair_offset = pair_end  # 更新偏移量
+        pair_offset = pair_end
 
-        # 后续逻辑保持不变
         active_pairs = indice_pairs[pair_start:pair_end, :]
         if active_pairs.numel() == 0:
             continue
