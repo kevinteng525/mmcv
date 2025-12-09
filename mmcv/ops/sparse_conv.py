@@ -180,17 +180,25 @@ class SparseConvolution(SparseModule):
                                                  self.subm)
         else:
             if self.subm:
-                out_features = Fsp.indice_subm_conv(features, self.weight,
-                                                    indice_pairs.to(device),
-                                                    indice_pair_num,
-                                                    outids.shape[0])
+                # out_features = Fsp.indice_subm_conv(features, self.weight,
+                #                                     indice_pairs.to(device),
+                #                                     indice_pair_num,
+                #                                     outids.shape[0])
+                out_features = ops.indice_conv(features, self.weight,
+                                               indice_pairs.to(device),
+                                               indice_pair_num,
+                                               outids.shape[0])
             else:
                 if self.inverse:
                     out_features = Fsp.indice_inverse_conv(
                         features, self.weight, indice_pairs.to(device),
                         indice_pair_num, outids.shape[0])
                 else:
-                    out_features = Fsp.indice_conv(features, self.weight,
+                    # out_features = Fsp.indice_conv(features, self.weight,
+                    #                                indice_pairs.to(device),
+                    #                                indice_pair_num,
+                    #                                outids.shape[0])
+                    out_features = ops.indice_conv(features, self.weight,
                                                    indice_pairs.to(device),
                                                    indice_pair_num,
                                                    outids.shape[0])

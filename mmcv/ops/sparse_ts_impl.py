@@ -41,7 +41,6 @@ def get_torchscript_export_mode() -> bool:
     """Check if TorchScript export mode is enabled."""
     return _torchscript_export_mode
 
-
 @torch.jit.script
 def _indice_conv_forward_impl(features: torch.Tensor,
                               filters: torch.Tensor,
@@ -50,60 +49,44 @@ def _indice_conv_forward_impl(features: torch.Tensor,
                               num_activate_out: int,
                               inverse: bool = False,
                               subm: bool = False) -> torch.Tensor:
-    """
-    TorchScript-compatible implementation of indice_conv_forward.
-
-    This is a simplified implementation that uses only native PyTorch operations.
-    It provides the same interface as the original CUDA extension.
-
-    Args:
-        features: Input features [N, C_in]
-        filters: Convolution filters [K1, K2, K3, C_in, C_out] (3D case)
-                 or [K1, K2, C_in, C_out] (2D case)
-        indice_pairs: Pairs of indices for sparse convolution
-        indice_pair_num: Number of pairs per kernel position
-        num_activate_out: Number of output activations
-        inverse: Whether this is an inverse convolution
-        subm: Whether this is a submanifold convolution
-
-    Returns:
-        Output features [M, C_out]
-    """
     device = features.device
     num_in_feats = features.shape[0]
     in_channels = features.shape[1]
     out_channels = filters.shape[-1]
 
     # Determine kernel dimension
-    ndim = len(filters.shape) - 2  # Subtract batch and channel dimensions
+    ndim = len(filters.shape) - 2
     kernel_size = filters.shape[:ndim]
     num_kernels = int(torch.prod(torch.tensor(kernel_size)).item())
 
-    # Initialize output tensor
+    # Initialize output
     output = torch.zeros(num_activate_out, out_channels, device=device, dtype=features.dtype)
 
-    # Reshape filters for easier indexing [num_kernels, in_channels, out_channels]
+    # Reshape filters
     filters_reshaped = filters.view(-1, in_channels, out_channels)
 
-    # Process each kernel position
-    for k in range(num_kernels):
-        # Get indices for this kernel position
-        pair_start = int(indice_pair_num[2 * k].item())
-        pair_end = int(indice_pair_num[2 * k + 1].item())
+    # 修正：累积索引而不是成对读取
+    pair_offset = 0
 
-        if pair_start >= pair_end:
+    for k in range(num_kernels):
+        # 方案A：如果 indice_pair_num 存储的是每个kernel的pair数量
+        num_pairs = int(indice_pair_num[k].item())
+
+        if num_pairs == 0:
             continue
 
-        # Get active pairs for this kernel position
+        pair_start = pair_offset
+        pair_end = pair_offset + num_pairs
+        pair_offset = pair_end  # 更新偏移量
+
+        # 后续逻辑保持不变
         active_pairs = indice_pairs[pair_start:pair_end, :]
         if active_pairs.numel() == 0:
             continue
 
-        # Extract input and output indices
         in_indices = active_pairs[:, 0].long()
         out_indices = active_pairs[:, 1].long()
 
-        # Bounds checking
         in_mask = (in_indices >= 0) & (in_indices < num_in_feats)
         out_mask = (out_indices >= 0) & (out_indices < num_activate_out)
         valid_mask = in_mask & out_mask
@@ -111,30 +94,19 @@ def _indice_conv_forward_impl(features: torch.Tensor,
         if not valid_mask.any():
             continue
 
-        # Use only valid indices
         valid_in_indices = in_indices[valid_mask]
         valid_out_indices = out_indices[valid_mask]
 
-        # Get corresponding features
-        active_input_features = features[valid_in_indices]  # [P, C_in]
+        active_input_features = features[valid_in_indices]
+        kernel_weight = filters_reshaped[k]
+        conv_output = torch.mm(active_input_features, kernel_weight)
 
-        # Get kernel weight for this position
-        kernel_weight = filters_reshaped[k]  # [C_in, C_out]
-
-        # Perform matrix multiplication: [P, C_in] x [C_in, C_out] -> [P, C_out]
-        conv_output = torch.mm(active_input_features, kernel_weight)  # [P, C_out]
-
-        # Accumulate to output
         if subm:
-            # Submanifold: direct assignment without accumulation
-            output.index_add_(0, valid_out_indices, conv_output)
+            output.index_add(0, valid_out_indices, conv_output)
         elif inverse:
-            # Inverse convolution: accumulate to input positions
-            # Note: inverse conv maps output back to input positions
-            output.index_add_(0, valid_in_indices, conv_output)
+            output.index_add(0, valid_in_indices, conv_output)
         else:
-            # Standard convolution: accumulate to output positions
-            output.index_add_(0, valid_out_indices, conv_output)
+            output.index_add(0, valid_out_indices, conv_output)
 
     return output
 
@@ -228,16 +200,15 @@ def _indice_conv_backward_impl(features: torch.Tensor,
         # Accumulate gradient for input
         if subm:
             # Submanifold: direct assignment
-            grad_input.index_add_(0, valid_in_indices, grad_input_feature)
+            grad_input.index_add(0, valid_in_indices, grad_input_feature)
         elif inverse:
             # Inverse convolution
-            grad_input.index_add_(0, valid_out_indices, grad_input_feature)
+            grad_input.index_add(0, valid_out_indices, grad_input_feature)
         else:
             # Standard convolution
-            grad_input.index_add_(0, valid_in_indices, grad_input_feature)
+            grad_input.index_add(0, valid_in_indices, grad_input_feature)
 
     return grad_input, grad_filters
-
 
 @torch.jit.script
 def _indice_maxpool_forward_impl(features: torch.Tensor,
@@ -297,7 +268,6 @@ def _indice_maxpool_forward_impl(features: torch.Tensor,
                 output[out_idx] = torch.max(output[out_idx], max_values)
 
     return output
-
 
 @torch.jit.script
 def _indice_maxpool_backward_impl(features: torch.Tensor,
@@ -375,20 +345,10 @@ def indice_conv_forward(features, filters, indice_pairs, indice_pair_num,
     Wrapper for indice_conv_forward that automatically uses TS implementation
     when in TorchScript export mode.
     """
-    if _torchscript_export_mode or torch.jit.is_tracing() or torch.jit.is_scripting():
-        # Use TorchScript-compatible implementation
-        return _indice_conv_forward_impl(
-            features, filters, indice_pairs, indice_pair_num,
-            num_activate_out, inverse, subm)
-    else:
-        # Use original fast implementation
-        from ..utils import ext_loader
-        ext_module = ext_loader.load_ext('_ext', [
-            'indice_conv_forward'
-        ])
-        return ext_module.indice_conv_forward(
-            features, filters, indice_pairs, indice_pair_num,
-            num_activate_out, int(inverse), int(subm))
+    # Use TorchScript-compatible implementation
+    return _indice_conv_forward_impl(
+        features, filters, indice_pairs, indice_pair_num,
+        num_activate_out, inverse, subm)
 
 
 def indice_conv_backward(features, filters, out_bp, indice_pairs,
@@ -397,20 +357,9 @@ def indice_conv_backward(features, filters, out_bp, indice_pairs,
     Wrapper for indice_conv_backward that automatically uses TS implementation
     when in TorchScript export mode.
     """
-    if _torchscript_export_mode or torch.jit.is_tracing() or torch.jit.is_scripting():
-        # Use TorchScript-compatible implementation
-        return _indice_conv_backward_impl(
-            features, filters, out_bp, indice_pairs,
-            indice_pair_num, inverse, subm)
-    else:
-        # Use original fast implementation
-        from ..utils import ext_loader
-        ext_module = ext_loader.load_ext('_ext', [
-            'indice_conv_backward'
-        ])
-        return ext_module.indice_conv_backward(
-            features, filters, out_bp, indice_pairs,
-            indice_pair_num, int(inverse), int(subm))
+    return _indice_conv_backward_impl(
+        features, filters, out_bp, indice_pairs,
+        indice_pair_num, inverse, subm)
 
 
 def indice_maxpool_forward(features, indice_pairs, indice_pair_num,
@@ -419,18 +368,8 @@ def indice_maxpool_forward(features, indice_pairs, indice_pair_num,
     Wrapper for indice_maxpool_forward that automatically uses TS implementation
     when in TorchScript export mode.
     """
-    if _torchscript_export_mode or torch.jit.is_tracing() or torch.jit.is_scripting():
-        # Use TorchScript-compatible implementation
-        return _indice_maxpool_forward_impl(
-            features, indice_pairs, indice_pair_num, num_activate_out)
-    else:
-        # Use original fast implementation
-        from ..utils import ext_loader
-        ext_module = ext_loader.load_ext('_ext', [
-            'indice_maxpool_forward'
-        ])
-        return ext_module.indice_maxpool_forward(
-            features, indice_pairs, indice_pair_num, num_activate_out)
+    return _indice_maxpool_forward_impl(
+        features, indice_pairs, indice_pair_num, num_activate_out)
 
 
 def indice_maxpool_backward(features, out_features, out_bp,
@@ -439,15 +378,6 @@ def indice_maxpool_backward(features, out_features, out_bp,
     Wrapper for indice_maxpool_backward that automatically uses TS implementation
     when in TorchScript export mode.
     """
-    if _torchscript_export_mode or torch.jit.is_tracing() or torch.jit.is_scripting():
         # Use TorchScript-compatible implementation
-        return _indice_maxpool_backward_impl(
-            features, out_features, out_bp, indice_pairs, indice_pair_num)
-    else:
-        # Use original fast implementation
-        from ..utils import ext_loader
-        ext_module = ext_module.load_ext('_ext', [
-            'indice_maxpool_backward'
-        ])
-        return ext_module.indice_maxpool_backward(
-            features, out_features, out_bp, indice_pairs, indice_pair_num)
+    return _indice_maxpool_backward_impl(
+        features, out_features, out_bp, indice_pairs, indice_pair_num)
